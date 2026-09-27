@@ -112,6 +112,9 @@ export const api = {
   getVideo: (videoId: number) =>
     request(`/videos/${videoId}`),
 
+  getVideoStream: (videoId: number) =>
+    request(`/videos/${videoId}/stream`),
+
   // -------------------------------
   // Frases
   // -------------------------------

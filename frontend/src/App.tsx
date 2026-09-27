@@ -326,7 +326,7 @@ export default function App() {
 
           <input
             type="url"
-            placeholder="https://www.youtube.com/watch?v=..."
+            placeholder="https://odysee.com/@canal:claim/video:claim"
             value={videoUrl}
             onChange={(event) =>
               setVideoUrl(event.target.value)

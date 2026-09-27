@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import YouTube, { YouTubeEvent } from "react-youtube";
+import { useEffect, useRef, useState } from "react";
+import Hls from "hls.js";
 import { api } from "./api";
 
 type Sentence = {
@@ -38,24 +38,6 @@ type Props = {
   onBack: () => void;
 };
 
-function extractYoutubeId(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-
-    if (parsed.hostname.includes("youtube.com")) {
-      const id = parsed.searchParams.get("v");
-      if (id) return id;
-    }
-
-    if (parsed.hostname === "youtu.be") {
-      return parsed.pathname.replace("/", "");
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 function formatTime(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -66,7 +48,10 @@ function formatTime(seconds: number): string {
 
 export default function VideoStudy({ videoId, onBack }: Props) {
   const [video, setVideo] = useState<Video | null>(null);
-  const [player, setPlayer] = useState<any>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -92,6 +77,8 @@ export default function VideoStudy({ videoId, onBack }: Props) {
   const [processingShadowing, setProcessingShadowing] = useState(false);
   const [shadowingResult, setShadowingResult] =
     useState<ShadowingResult | null>(null);
+  const [recordedAudio, setRecordedAudio] = useState<Blob | null>(null);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
   const [selectedShadowingSentence, setSelectedShadowingSentence] =
     useState<Sentence | null>(null);
 
@@ -103,10 +90,6 @@ export default function VideoStudy({ videoId, onBack }: Props) {
   const shadowingSentenceRef = useRef<Sentence | null>(null);
   const shadowingStoppingRef = useRef(false);
 
-  const youtubeId = useMemo(() => {
-    if (!video) return null;
-    return extractYoutubeId(video.video_url);
-  }, [video]);
 
   // --------------------------------------------------
   // Carregar vídeo
@@ -114,10 +97,12 @@ export default function VideoStudy({ videoId, onBack }: Props) {
 
   useEffect(() => {
     loadVideo();
+    loadStream();
 
     return () => {
       stopCurrentSentence();
       stopShadowingRecording();
+      if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
     };
   }, [videoId]);
 
@@ -138,6 +123,61 @@ export default function VideoStudy({ videoId, onBack }: Props) {
       setLoading(false);
     }
   }
+
+  async function loadStream() {
+    try {
+      const result = await api.getVideoStream(videoId);
+      setStreamUrl(result.stream_url || null);
+      setEmbedUrl(result.embed_url || null);
+      setStreamError(result.stream_error || "");
+    } catch (error) {
+      setStreamUrl(null);
+      setStreamError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível carregar o stream do Odysee."
+      );
+    }
+  }
+
+  useEffect(() => {
+    if (!streamUrl || !videoRef.current) return;
+
+    const element = videoRef.current;
+
+    element.crossOrigin = "anonymous";
+
+    if (Hls.isSupported() && /\.m3u8(?:$|\?)/i.test(streamUrl)) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        console.error("Odysee HLS error:", data);
+        if (data.fatal) {
+          setError(`Não foi possível reproduzir o vídeo do Odysee: ${data.details || "erro HLS"}`);
+        }
+      });
+
+      hls.loadSource(streamUrl);
+      hls.attachMedia(element);
+
+      return () => {
+        hls.destroy();
+      };
+    }
+
+    // Safari/iOS and direct MP4 playback.
+    element.src = streamUrl;
+    element.load();
+
+    return () => {
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
+    };
+  }, [streamUrl]);
 
   // --------------------------------------------------
   // Dicionário
@@ -213,14 +253,6 @@ export default function VideoStudy({ videoId, onBack }: Props) {
   }
 
   // --------------------------------------------------
-  // YouTube
-  // --------------------------------------------------
-
-  function onPlayerReady(event: YouTubeEvent) {
-    setPlayer(event.target);
-  }
-
-  // --------------------------------------------------
   // Reprodução de frase
   // --------------------------------------------------
 
@@ -230,15 +262,15 @@ export default function VideoStudy({ videoId, onBack }: Props) {
       animationFrameRef.current = null;
     }
 
-    if (player) {
-      player.pauseVideo();
+    if (videoRef.current) {
+      videoRef.current.pause();
     }
 
     setPlayingSentenceId(null);
   }
 
   function playSentence(sentence: Sentence) {
-    if (!player) return;
+    if (!videoRef.current) return;
 
     if (animationFrameRef.current !== null) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -247,14 +279,14 @@ export default function VideoStudy({ videoId, onBack }: Props) {
     setSelectedSentenceId(sentence.id);
     setPlayingSentenceId(sentence.id);
 
-    player.seekTo(sentence.start_time, true);
-    player.playVideo();
+    videoRef.current.currentTime = sentence.start_time;
+    void videoRef.current.play();
 
     const checkTime = () => {
-      const currentTime = player.getCurrentTime();
+      const currentTime = videoRef.current?.currentTime ?? 0;
 
       if (currentTime >= sentence.end_time) {
-        player.pauseVideo();
+        videoRef.current?.pause();
         animationFrameRef.current = null;
         setPlayingSentenceId(null);
         return;
@@ -275,12 +307,10 @@ export default function VideoStudy({ videoId, onBack }: Props) {
   // --------------------------------------------------
 
   async function startShadowing(sentence: Sentence) {
-    if (!player || recording || processingShadowing) {
-      return;
-    }
+    if (recording || processingShadowing) return;
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      alert("Seu navegador não permite acesso ao microfone.");
+      setError("Seu navegador não permite acesso ao microfone.");
       return;
     }
 
@@ -288,109 +318,76 @@ export default function VideoStudy({ videoId, onBack }: Props) {
       setSelectedSentenceId(sentence.id);
       setSelectedShadowingSentence(sentence);
       setShadowingResult(null);
+      setRecordedAudio(null);
+      if (recordedAudioUrl) {
+        URL.revokeObjectURL(recordedAudioUrl);
+        setRecordedAudioUrl(null);
+      }
       setError("");
-      setRecording(false);
       shadowingSentenceRef.current = sentence;
       shadowingStoppingRef.current = false;
 
-      stopCurrentSentence();
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      });
-
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       audioChunksRef.current = [];
 
-      const recorder = new MediaRecorder(stream);
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
+
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
 
       recorder.onerror = () => {
-        stopShadowingRecording();
+        cleanupShadowingStream();
+        mediaRecorderRef.current = null;
+        setRecording(false);
         setError("Ocorreu um erro durante a gravação.");
       };
 
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         const chunks = audioChunksRef.current;
-        const mimeType = recorder.mimeType || "audio/webm";
+        const type = recorder.mimeType || "audio/webm";
+        const blob = new Blob(chunks, { type });
 
+        audioChunksRef.current = [];
         mediaRecorderRef.current = null;
+        cleanupShadowingStream();
+        setRecording(false);
 
-        if (chunks.length === 0) {
-          cleanupShadowingStream();
-          setRecording(false);
-          setProcessingShadowing(false);
+        if (blob.size === 0) {
           setError("Nenhum áudio foi capturado.");
           return;
         }
 
-        const audioBlob = new Blob(chunks, {
-          type: mimeType,
-        });
-
-        audioChunksRef.current = [];
-        cleanupShadowingStream();
-        setRecording(false);
-
-        await sendShadowing(sentence, audioBlob);
+        if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+        setRecordedAudio(blob);
+        setRecordedAudioUrl(URL.createObjectURL(blob));
       };
 
       recorder.start();
       setRecording(true);
-
-      player.seekTo(sentence.start_time, true);
-      player.playVideo();
-
-      monitorShadowingSentence(sentence);
     } catch (error) {
       cleanupShadowingStream();
       mediaRecorderRef.current = null;
       setRecording(false);
-
       console.error("Erro ao iniciar Shadowing:", error);
 
       if (error instanceof DOMException && error.name === "NotAllowedError") {
-        setError(
-          "Permissão para usar o microfone foi negada. Permita o acesso ao microfone no navegador."
-        );
+        setError("Permissão para usar o microfone foi negada. Permita o acesso ao microfone no navegador.");
       } else {
         setError("Não foi possível iniciar o Shadowing.");
       }
     }
-  }
-
-  function monitorShadowingSentence(sentence: Sentence) {
-    if (shadowingAnimationFrameRef.current !== null) {
-      cancelAnimationFrame(shadowingAnimationFrameRef.current);
-    }
-
-    const checkTime = () => {
-      if (!player || shadowingStoppingRef.current) {
-        shadowingAnimationFrameRef.current = null;
-        return;
-      }
-
-      const currentTime = player.getCurrentTime();
-
-      if (currentTime >= sentence.end_time) {
-        player.pauseVideo();
-        shadowingAnimationFrameRef.current = null;
-        stopShadowingRecording();
-        return;
-      }
-
-      shadowingAnimationFrameRef.current =
-        requestAnimationFrame(checkTime);
-    };
-
-    shadowingAnimationFrameRef.current =
-      requestAnimationFrame(checkTime);
   }
 
   function cleanupShadowingStream() {
@@ -411,10 +408,6 @@ export default function VideoStudy({ videoId, onBack }: Props) {
       shadowingAnimationFrameRef.current = null;
     }
 
-    if (player) {
-      player.pauseVideo();
-    }
-
     const recorder = mediaRecorderRef.current;
 
     if (!recorder) {
@@ -429,6 +422,11 @@ export default function VideoStudy({ videoId, onBack }: Props) {
       cleanupShadowingStream();
       setRecording(false);
     }
+  }
+
+  async function submitShadowing() {
+    if (!selectedShadowingSentence || !recordedAudio || processingShadowing) return;
+    await sendShadowing(selectedShadowingSentence, recordedAudio);
   }
 
   async function sendShadowing(
@@ -493,25 +491,16 @@ export default function VideoStudy({ videoId, onBack }: Props) {
   }
 
   // --------------------------------------------------
-  // URL inválida
-  // --------------------------------------------------
+  // Stream Odysee
 
-  if (!youtubeId) {
+  if (!streamUrl && !embedUrl) {
     return (
       <main className="app">
-        <button
-          type="button"
-          onClick={onBack}
-        >
-          ← Voltar
-        </button>
-
+        <button type="button" onClick={onBack}>← Voltar</button>
         <section className="card">
-          <h2>URL não reconhecida</h2>
-
-          <p>
-            No momento estamos trabalhando com links do YouTube.
-          </p>
+          <h2>Carregando vídeo...</h2>
+          <p>Resolvendo o stream do Odysee.</p>
+          {streamError && <p className="error">{streamError}</p>}
         </section>
       </main>
     );
@@ -554,20 +543,46 @@ export default function VideoStudy({ videoId, onBack }: Props) {
           </div>
         </div>
 
-        <div className="youtube-player">
-          <YouTube
-            videoId={youtubeId}
-            onReady={onPlayerReady}
-            opts={{
-              width: "100%",
-              height: "500",
-              playerVars: {
-                autoplay: 0,
-                controls: 1,
-                rel: 0,
-              },
-            }}
-          />
+        <div className="video-player">
+          {streamUrl ? (
+            <video
+              ref={videoRef}
+              controls
+              playsInline
+              preload="metadata"
+              onError={() => {
+                const mediaError = videoRef.current?.error;
+                setStreamError(
+                  mediaError
+                    ? `Erro ao reproduzir o vídeo (código ${mediaError.code}).`
+                    : "Não foi possível reproduzir o vídeo do Odysee."
+                );
+              }}
+              style={{
+                width: "100%",
+                maxHeight: "500px",
+                background: "#000",
+              }}
+            />
+          ) : embedUrl ? (
+            <>
+              <iframe
+                title={video.title || "Odysee video"}
+                src={embedUrl}
+                allow="autoplay; fullscreen; picture-in-picture"
+                allowFullScreen
+                style={{
+                  width: "100%",
+                  aspectRatio: "16 / 9",
+                  border: 0,
+                  background: "#000",
+                }}
+              />
+              <p style={{ opacity: 0.7, marginTop: "8px" }}>
+                O player direto do Odysee não pôde ser resolvido; usando o player oficial como fallback.
+              </p>
+            </>
+          ) : null}
         </div>
       </section>
 
@@ -603,7 +618,7 @@ export default function VideoStudy({ videoId, onBack }: Props) {
                   <button
                     type="button"
                     onClick={() => playSentence(sentence)}
-                    disabled={recording || processingShadowing}
+                    disabled={recording || processingShadowing || !streamUrl}
                   >
                     {playingSentenceId === sentence.id
                       ? "⏸ Reproduzindo..."
@@ -613,9 +628,9 @@ export default function VideoStudy({ videoId, onBack }: Props) {
                   <button
                     type="button"
                     onClick={() => startShadowing(sentence)}
-                    disabled={recording || processingShadowing}
+                    disabled={recording || processingShadowing || !streamUrl}
                   >
-                    🎙️ Shadowing
+                    🎙️ Começar gravação
                   </button>
                 </div>
               </div>
@@ -629,28 +644,37 @@ export default function VideoStudy({ videoId, onBack }: Props) {
 
       {recording && selectedShadowingSentence && (
         <section className="card shadowing-recording">
-          <div className="recording-indicator">
-            🔴 Gravando...
-          </div>
-
-          <p>
-            Fale junto com a frase:
-          </p>
-
-          <strong>
-            {selectedShadowingSentence.text}
-          </strong>
-
-          <p style={{ opacity: 0.7 }}>
-            A gravação termina automaticamente quando a frase acabar.
-          </p>
-
-          <button
-            type="button"
-            onClick={stopShadowingRecording}
-          >
-            ⏹ Finalizar agora
+          <div className="recording-indicator">🔴 Gravando...</div>
+          <p>Repita a frase em voz alta:</p>
+          <strong>{selectedShadowingSentence.text}</strong>
+          <p style={{ opacity: 0.7 }}>A gravação só termina quando você clicar em parar.</p>
+          <button type="button" onClick={stopShadowingRecording}>
+            ⏹ Parar gravação
           </button>
+        </section>
+      )}
+
+      {recordedAudio && recordedAudioUrl && !recording && !processingShadowing && (
+        <section className="card shadowing-preview">
+          <h2>Ouça sua gravação</h2>
+          <p>{selectedShadowingSentence?.text}</p>
+          <audio controls src={recordedAudioUrl} style={{ width: "100%" }} />
+          <div className="sentence-actions" style={{ marginTop: "12px" }}>
+            <button
+              type="button"
+              onClick={() => {
+                setRecordedAudio(null);
+                if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+                setRecordedAudioUrl(null);
+                if (selectedShadowingSentence) void startShadowing(selectedShadowingSentence);
+              }}
+            >
+              🎙️ Gravar novamente
+            </button>
+            <button type="button" onClick={submitShadowing}>
+              🚀 Enviar para análise
+            </button>
+          </div>
         </section>
       )}
 
@@ -873,7 +897,7 @@ export default function VideoStudy({ videoId, onBack }: Props) {
                   <div className="sentence-actions">
                     <button
                       type="button"
-                      disabled={recording || processingShadowing}
+                      disabled={recording || processingShadowing || !streamUrl}
                       onClick={(event) => {
                         event.stopPropagation();
                         playSentence(sentence);
@@ -884,13 +908,13 @@ export default function VideoStudy({ videoId, onBack }: Props) {
 
                     <button
                       type="button"
-                      disabled={recording || processingShadowing}
+                      disabled={recording || processingShadowing || !streamUrl}
                       onClick={(event) => {
                         event.stopPropagation();
                         startShadowing(sentence);
                       }}
                     >
-                      🎙️ Shadowing
+                      🎙️ Gravar
                     </button>
                   </div>
                 </article>

@@ -438,14 +438,14 @@ label {
   }
 }
 
-.youtube-player {
+.video-player {
   width: 100%;
   overflow: hidden;
   border-radius: 12px;
   background: #000;
 }
 
-.youtube-player iframe {
+.video-player iframe {
   display: block;
   width: 100%;
   max-width: 100%;

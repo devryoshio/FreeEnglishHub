@@ -27,7 +27,7 @@ def get_model():
 
 
 # ---------------------------------------------------------
-# Baixar áudio temporariamente
+# Baixar áudio temporariamente (Odysee via yt-dlp)
 # ---------------------------------------------------------
 
 def download_audio(video_url: str) -> tuple[str, str]:

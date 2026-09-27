@@ -15,4 +15,4 @@ Frontend: http://localhost:5173
 API: http://localhost:8000  
 Swagger: http://localhost:8000/docs
 
-A próxima etapa é integrar o player oficial (ex.: YouTube IFrame API), Whisper, IPA e dicionário.
+O projeto usa Odysee como fonte de vídeo, player HTML5/HLS, Whisper, IPA e dicionário.

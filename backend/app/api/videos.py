@@ -8,6 +8,7 @@ from app.db.database import get_db
 from app.models import User, Video, Sentence
 from app.api.auth import current
 from app.services.whisper import transcribe_video
+from app.services.odysee import resolve_stream_url
 
 router = APIRouter()
 
@@ -187,6 +188,58 @@ def transcribe(
 
 
 
+
+
+
+# ============================================================
+# Resolver stream Odysee para o player HTML5
+# ============================================================
+
+@router.get("/{video_id}/stream")
+def stream(
+    video_id: int,
+    u=Depends(current),
+    db: Session = Depends(get_db),
+):
+    video = db.scalar(
+        select(Video).where(
+            Video.id == video_id,
+            Video.user_id == u.id,
+        )
+    )
+
+    if not video:
+        raise HTTPException(
+            status_code=404,
+            detail="Video not found",
+        )
+
+    # Keep the original Odysee URL as an iframe fallback. Direct playback is
+    # preferred because it allows precise sentence seeking.
+    raw_path = video.video_url.strip()
+    if raw_path.startswith("http://") or raw_path.startswith("https://"):
+        from urllib.parse import urlparse
+        parsed = urlparse(raw_path)
+        embed_url = f"https://odysee.com/$/embed/{parsed.path.lstrip('/')}"
+    else:
+        embed_url = f"https://odysee.com/$/embed/{raw_path.removeprefix('lbry://')}"
+
+    try:
+        streaming_url = resolve_stream_url(video.video_url)
+    except Exception as exc:
+        return {
+            "video_id": video.id,
+            "stream_url": None,
+            "embed_url": embed_url,
+            "stream_error": str(exc),
+        }
+
+    return {
+        "video_id": video.id,
+        "stream_url": streaming_url,
+        "embed_url": embed_url,
+        "stream_error": None,
+    }
 
 
 # ============================================================
