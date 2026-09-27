@@ -174,3 +174,17 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
+
+
+# FreeEnglishHub
+backend/data/
+*.db
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Environment
+.env
+.env.*
+!.env.example

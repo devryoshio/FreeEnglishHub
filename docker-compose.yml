@@ -1,29 +1,19 @@
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+
   backend:
     build: ./backend
-    env_file: .env
-    ports: ["8000:8000"]
-    depends_on:
-      db:
-        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+
   frontend:
     build: ./frontend
     environment:
       VITE_API_URL: http://localhost:8000
-    ports: ["5173:5173"]
-    depends_on: [backend]
-volumes:
-  postgres_data:
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
