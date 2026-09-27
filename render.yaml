@@ -14,18 +14,3 @@ services:
 
       - key: CORS_ORIGINS
         sync: false
-
-    disk:
-      name: freeenglishhub-data
-      mountPath: /app/data
-      sizeGB: 1
-
-  - type: web
-    name: freeenglishhub-frontend
-    runtime: docker
-    dockerfilePath: ./frontend/Dockerfile
-    dockerContext: ./frontend
-
-    envVars:
-      - key: VITE_API_URL
-        sync: false
