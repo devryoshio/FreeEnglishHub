@@ -1,0 +1,6 @@
+POSTGRES_DB=shadowing
+POSTGRES_USER=shadowing
+POSTGRES_PASSWORD=change-me
+DATABASE_URL=postgresql+psycopg://shadowing:change-me@db:5432/shadowing
+JWT_SECRET=change-this-in-production
+CORS_ORIGINS=http://localhost:5173
