@@ -1,9 +1,12 @@
 services:
+
   - type: web
     name: freeenglishhub-backend
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
+
+    plan: free
 
     envVars:
       - key: DATABASE_URL
@@ -13,4 +16,16 @@ services:
         generateValue: true
 
       - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: freeenglishhub-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+
+    plan: free
+
+    envVars:
+      - key: VITE_API_URL
         sync: false
